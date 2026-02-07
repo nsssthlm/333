@@ -1,0 +1,215 @@
+name: "speckle"
+
+volumes:
+  speckle_postgres_data:
+    external: "true"
+  speckle_minio_data:
+    external: "true"
+  speckle_redis_data:
+    external: "true"
+
+services:
+  ingress:
+    image: "nginx"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      server:
+        condition: "service_healthy"
+      frontend:
+        condition: "service_healthy"
+
+    volumes:
+      - ./ingress/nginx.conf:/etc/nginx/nginx.conf
+
+    ports:
+      - "127.0.0.1:8080:8080"
+
+
+  server:
+    image: "speckle/speckle-server:2.26.8"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      postgres:
+        condition: "service_healthy"
+      minio:
+        condition: "service_healthy"
+      redis:
+        condition: "service_healthy"
+
+    env_file: "/etc/speckle-server.env"
+
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "try { require('node:http').request({headers: {'Content-Type': 'application/json'}, port:3000, hostname:'127.0.0.1', path:'/readiness', method: 'GET', timeout: 2000 }, (res) => { body = ''; res.on('data', (chunk) => {body += chunk;}); res.on('end', () => {process.exit(res.statusCode != 200 || body.toLowerCase().includes('error') ? 1 : 0);}); }).end(); } catch { process.exit(1); }"
+      start_period: "60s"
+      start_interval: "5s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  frontend:
+    image: "speckle/speckle-frontend-2:2.26.8"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      server:
+        condition: "service_healthy"
+
+    env_file: "/etc/speckle-frontend.env"
+
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "try { require('node:http').request({headers: {'Content-Type': 'application/json'}, port:8080, hostname:'127.0.0.1', path:'/api/status', method: 'GET', timeout: 2000 }, (res) => { body = ''; res.on('data', (chunk) => {body += chunk;}); res.on('end', () => {process.exit(res.statusCode != 200 || body.toLowerCase().includes('error') ? 1 : 0);}); }).end(); } catch { process.exit(1); }"
+      start_period: "60s"
+      start_interval: "5s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  preview:
+    image: "speckle/speckle-preview-service:2.26.8"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      server:
+        condition: "service_healthy"
+
+    env_file: "/etc/speckle-preview.env"
+
+
+  webhook:
+    image: "speckle/speckle-webhook-service:2.26.8"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      server:
+        condition: "service_healthy"
+
+    env_file: "/etc/speckle-webhook.env"
+
+
+  ifc-import:
+    image: "speckle/speckle-ifc-import-service:2.26.8"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      server:
+        condition: "service_healthy"
+
+    env_file: "/etc/speckle-ifc-import.env"
+
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request as r; s = r.urlopen('http://127.0.0.1:9080/healthz').status; exit(0 if s == 200 else 1)"
+      start_period: "60s"
+      start_interval: "5s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  fileimport:
+    image: "speckle/speckle-fileimport-service:2.26.8"
+
+    restart: "unless-stopped"
+
+    env_file: "/etc/speckle-fileimport.env"
+
+    depends_on:
+      server:
+        condition: "service_healthy"
+
+    healthcheck:
+      test:
+        - "CMD"
+        - "/usr/bin/node"
+        - "-e"
+        - "process.exit((Date.now() - require('fs').readFileSync('/tmp/last_successful_query', 'utf8') > 25 * 60 * 1000) ? 1 : 0)"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  postgres:
+    image: "postgres:16"
+
+    restart: "unless-stopped"
+
+    volumes:
+      - "speckle_postgres_data:/var/lib/postgresql/data/"
+
+    command: "postgres -c max_prepared_transactions=150"
+
+    env_file: "/etc/speckle-postgres.env"
+
+    healthcheck:
+      test: "pg_isready -U speckle"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  minio:
+    image: "minio/minio"
+
+    restart: "unless-stopped"
+
+    volumes:
+      - "speckle_minio_data:/data"
+
+    ports:
+      - "127.0.0.1:9200:9000"
+      - "127.0.0.1:9201:9001"
+
+    command: "server /data"
+
+    env_file: "/etc/speckle-minio.env"
+
+    healthcheck:
+      test: "mc ready local"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  redis:
+    image: "valkey/valkey:8"
+
+    restart: "unless-stopped"
+
+    volumes:
+      - "speckle_redis_data:/data"
+
+    healthcheck:
+      test: "valkey-cli --raw incr ping"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+

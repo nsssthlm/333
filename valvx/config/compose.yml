@@ -1,0 +1,127 @@
+name: "valvx"
+
+volumes:
+  valvx_caddy_data:
+    external: true
+  valvx_postgres_data:
+    external: true
+  valvx_minio_data:
+    external: true
+
+services:
+  caddy:
+    image: "valvx-caddy"
+
+    build:
+      context: "."
+      dockerfile_inline: |
+        from caddy:2.10.0-alpine
+        run apk add curl
+
+    restart: "unless-stopped"
+
+    network_mode: "host"
+
+    volumes:
+      - "valvx_caddy_data:/data"
+      - "./caddy_conf:/etc/caddy"
+
+    healthcheck:
+      test: "curl -f http://127.0.0.1:80/healthz"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  api:
+    image: "valvx-app-api"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      postgres:
+        condition: "service_healthy"
+      minio:
+        condition: "service_healthy"
+
+    network_mode: "host"
+
+    env_file: "/etc/valvx-app-api.env"
+
+    healthcheck:
+      test: "curl -f http://127.0.0.1:$${VALVX_API_SERVER_BIND_PORT}/healthz"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  web:
+    image: "valvx-app-web"
+
+    restart: "unless-stopped"
+
+    depends_on:
+      api:
+        condition: "service_healthy"
+
+    network_mode: "host"
+
+    env_file: "/etc/valvx-app-web.env"
+
+    healthcheck:
+      test: "curl -f http://127.0.0.1:$${VALVX_WEB_SERVER_PORT}/healthz"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  postgres:
+    image: "postgres:17"
+
+    restart: "unless-stopped"
+
+    network_mode: "host"
+
+    volumes:
+      - "valvx_postgres_data:/var/lib/postgresql"
+
+    env_file: "/etc/valvx-postgres.env"
+
+    command: "postgres -c log_statement=all"
+
+    healthcheck:
+      test: "pg_isready -U $${PGUSER}"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1
+
+
+  minio:
+    image: "minio/minio"
+
+    restart: "unless-stopped"
+
+    network_mode: "host"
+
+    volumes:
+      - "valvx_minio_data:/data"
+
+    command: "server /data"
+
+    env_file: "/etc/valvx-minio.env"
+
+    healthcheck:
+      test: "mc ready $${MINIO_ALIAS}"
+      start_period: "5s"
+      start_interval: "1s"
+      interval: "10s"
+      timeout: "2s"
+      retries: 1

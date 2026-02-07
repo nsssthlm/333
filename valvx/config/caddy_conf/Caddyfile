@@ -1,0 +1,80 @@
+api.valvx.se {
+	encode gzip
+
+	header Content-Security-Policy "default-src 'none';"
+	header Cross-Origin-Embedder-Policy "require-corp"
+	header Cross-Origin-Resource-Policy "same-origin"
+	header Cross-Origin-Opener-Policy "same-origin"
+	header Referrer-Policy "strict-origin-when-cross-origin"
+	header Permissions-Policy ""
+	header X-Content-Type-Options "nosniff"
+	header X-Frame-Options "DENY"
+	header X-XSS-Protection "0"
+	header X-Robots-Tag "none"
+
+	reverse_proxy {
+		to 127.0.0.1:4000
+	}
+}
+
+app.valvx.se {
+	encode gzip
+
+	# Content-Security-Policy is set dynamically by the app
+	# Some security headers are temporarily disabled to make the Speckle iframe work
+	# header Cross-Origin-Embedder-Policy "require-corp"
+	header Cross-Origin-Resource-Policy "same-origin"
+	# header Cross-Origin-Opener-Policy "same-origin"
+	header Referrer-Policy "strict-origin-when-cross-origin"
+	# header Permissions-Policy "cross-origin-isolated=()"
+	header X-Content-Type-Options "nosniff"
+	header X-Frame-Options "DENY"
+	header X-XSS-Protection "0"
+	header X-Robots-Tag "none"
+
+	reverse_proxy {
+		to 127.0.0.1:5000
+	}
+}
+
+storage.valvx.se {
+	encode gzip
+
+	header Content-Security-Policy "default-src 'self'; frame-ancestors https://app.valvx.se;"
+	header Cross-Origin-Embedder-Policy "require-corp"
+	header Cross-Origin-Resource-Policy "cross-origin"
+	header Cross-Origin-Opener-Policy "same-origin"
+	header Referrer-Policy "strict-origin-when-cross-origin"
+	header Permissions-Policy ""
+	header X-Content-Type-Options "nosniff"
+	header X-XSS-Protection "0"
+	header X-Robots-Tag "none"
+
+	reverse_proxy {
+		to 127.0.0.1:9000
+
+		header_down -X-XSS-Protection
+	}
+}
+
+speckle.valvx.se {
+	header /projects/* {
+		-X-Frame-Options
+	}
+
+	reverse_proxy {
+		to 127.0.0.1:8080
+	}
+}
+
+storage.speckle.valvx.se {
+	reverse_proxy {
+		to 127.0.0.1:9200
+	}
+}
+
+:80 {
+	handle /healthz {
+		respond "ok"
+	}
+}
