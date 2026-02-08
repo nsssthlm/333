@@ -20,13 +20,13 @@ api.valvx.se {
 app.valvx.se {
 	encode gzip
 
-	# Content-Security-Policy is set dynamically by the app
-	# Some security headers are temporarily disabled to make the Speckle iframe work
-	# header Cross-Origin-Embedder-Policy "require-corp"
+	# All security headers restored — no more iframe workarounds needed
+	# The Speckle viewer is now embedded directly via @speckle/viewer SDK
+	header Cross-Origin-Embedder-Policy "require-corp"
 	header Cross-Origin-Resource-Policy "same-origin"
-	# header Cross-Origin-Opener-Policy "same-origin"
+	header Cross-Origin-Opener-Policy "same-origin"
 	header Referrer-Policy "strict-origin-when-cross-origin"
-	# header Permissions-Policy "cross-origin-isolated=()"
+	header Permissions-Policy ""
 	header X-Content-Type-Options "nosniff"
 	header X-Frame-Options "DENY"
 	header X-XSS-Protection "0"
@@ -58,8 +58,20 @@ storage.valvx.se {
 }
 
 speckle.valvx.se {
-	header /projects/* {
-		-X-Frame-Options
+	# Speckle is now API-only (no frontend iframe needed)
+	# CORS allows the ValvX frontend to make direct API calls for 3D data streaming
+	@cors header Origin https://app.valvx.se
+	header @cors Access-Control-Allow-Origin "https://app.valvx.se"
+	header @cors Access-Control-Allow-Methods "GET, POST, OPTIONS"
+	header @cors Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
+	header @cors Access-Control-Max-Age "86400"
+
+	@options method OPTIONS
+	handle @options {
+		header Access-Control-Allow-Origin "https://app.valvx.se"
+		header Access-Control-Allow-Methods "GET, POST, OPTIONS"
+		header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
+		respond 204
 	}
 
 	reverse_proxy {

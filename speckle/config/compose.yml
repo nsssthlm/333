@@ -1,5 +1,9 @@
 name: "speckle"
 
+# Updated: Removed speckle-frontend-2 service — the viewer is now embedded
+# directly in the ValvX frontend using @speckle/viewer SDK.
+# Nginx ingress simplified to API-only routing.
+
 volumes:
   speckle_postgres_data:
     external: "true"
@@ -16,8 +20,6 @@ services:
 
     depends_on:
       server:
-        condition: "service_healthy"
-      frontend:
         condition: "service_healthy"
 
     volumes:
@@ -54,30 +56,10 @@ services:
       timeout: "2s"
       retries: 1
 
-
-  frontend:
-    image: "speckle/speckle-frontend-2:2.26.8"
-
-    restart: "unless-stopped"
-
-    depends_on:
-      server:
-        condition: "service_healthy"
-
-    env_file: "/etc/speckle-frontend.env"
-
-    healthcheck:
-      test:
-        - CMD
-        - /nodejs/bin/node
-        - -e
-        - "try { require('node:http').request({headers: {'Content-Type': 'application/json'}, port:8080, hostname:'127.0.0.1', path:'/api/status', method: 'GET', timeout: 2000 }, (res) => { body = ''; res.on('data', (chunk) => {body += chunk;}); res.on('end', () => {process.exit(res.statusCode != 200 || body.toLowerCase().includes('error') ? 1 : 0);}); }).end(); } catch { process.exit(1); }"
-      start_period: "60s"
-      start_interval: "5s"
-      interval: "10s"
-      timeout: "2s"
-      retries: 1
-
+  # REMOVED: frontend service (speckle/speckle-frontend-2:2.26.8)
+  # The Speckle viewer is now embedded directly in the ValvX web app
+  # using @speckle/viewer SDK, eliminating the need for the separate
+  # Speckle frontend and its iframe-related CORS/security workarounds.
 
   preview:
     image: "speckle/speckle-preview-service:2.26.8"
@@ -212,4 +194,3 @@ services:
       interval: "10s"
       timeout: "2s"
       retries: 1
-
