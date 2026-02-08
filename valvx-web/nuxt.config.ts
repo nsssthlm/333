@@ -6,7 +6,6 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       apiBaseUrl: process.env.VALVX_WEB_API_BASE_URL || 'https://api.valvx.se',
-      speckleBaseUrl: process.env.VALVX_WEB_SPECKLE_BASE_URL || 'https://speckle.valvx.se',
       appOrigin: process.env.VALVX_WEB_SERVER_ORIGIN || 'https://app.valvx.se',
     },
   },
@@ -25,7 +24,10 @@ export default defineNuxtConfig({
 
   vite: {
     optimizeDeps: {
-      include: ['three'],
+      include: ['three', 'web-ifc'],
+    },
+    worker: {
+      format: 'es',
     },
   },
 

@@ -3,14 +3,13 @@
  * Main 3D Viewer page — The core of ValvX.
  *
  * Integrates:
- * - @speckle/viewer for 3D model display (replaces iframe)
+ * - That Open Engine for 3D IFC model display (client-side WASM parsing)
  * - BCF topic list + creation
  * - File upload panel
- * - Object properties
  */
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useBcf } from '~/composables/useBcf'
-import type { LoadedModel } from '~/types/speckle'
+import type { IfcModel } from '~/composables/useIfcViewer'
 import type { BcfTopic, BcfViewpoint, BcfCreateTopicRequest } from '~/types/bcf'
 
 const route = useRoute()
@@ -21,7 +20,7 @@ const projectId = route.params.projectId as string
 const bcf = useBcf(projectId)
 
 // State
-const models = ref<LoadedModel[]>([])
+const models = ref<IfcModel[]>([])
 const showBcfPanel = ref(true)
 const showUploadPanel = ref(false)
 const showBcfCreate = ref(false)
@@ -33,7 +32,7 @@ const viewerRef = ref<any>(null)
 // Current folder for uploads (root folder)
 const currentFolderId = ref('root')
 
-// Load project models from API
+// Load project models from API — returns direct MinIO/S3 download URLs
 async function loadProjectModels() {
   try {
     const response = await fetch(
@@ -42,15 +41,15 @@ async function loadProjectModels() {
     )
     if (response.ok) {
       const data = await response.json()
-      models.value = data.map((m: any) => ({
-        fileVersionId: m.fileVersionId,
-        fileName: m.fileName,
-        speckleModelId: m.speckleModelId,
-        speckleObjectId: m.speckleObjectId,
-        url: `${config.public.speckleBaseUrl}/projects/${m.speckleProjectId}/models/${m.speckleModelId}`,
-        visible: true,
-        loading: false,
-      }))
+      models.value = data
+        .filter((m: any) => m.fileExt === 'ifc')
+        .map((m: any) => ({
+          fileVersionId: m.fileVersionId,
+          fileName: m.fileName,
+          url: `${config.public.apiBaseUrl}/api/files/${m.fileVersionId}/download`,
+          visible: true,
+          loading: false,
+        }))
     }
   } catch (err) {
     console.error('Failed to load project models:', err)

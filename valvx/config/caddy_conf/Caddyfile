@@ -20,8 +20,8 @@ api.valvx.se {
 app.valvx.se {
 	encode gzip
 
-	# All security headers restored — no more iframe workarounds needed
-	# The Speckle viewer is now embedded directly via @speckle/viewer SDK
+	# All security headers restored — IFC parsed client-side via web-ifc WASM
+	# No iframes, no Speckle, no CORS relaxation needed
 	header Cross-Origin-Embedder-Policy "require-corp"
 	header Cross-Origin-Resource-Policy "same-origin"
 	header Cross-Origin-Opener-Policy "same-origin"
@@ -54,34 +54,6 @@ storage.valvx.se {
 		to 127.0.0.1:9000
 
 		header_down -X-XSS-Protection
-	}
-}
-
-speckle.valvx.se {
-	# Speckle is now API-only (no frontend iframe needed)
-	# CORS allows the ValvX frontend to make direct API calls for 3D data streaming
-	@cors header Origin https://app.valvx.se
-	header @cors Access-Control-Allow-Origin "https://app.valvx.se"
-	header @cors Access-Control-Allow-Methods "GET, POST, OPTIONS"
-	header @cors Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
-	header @cors Access-Control-Max-Age "86400"
-
-	@options method OPTIONS
-	handle @options {
-		header Access-Control-Allow-Origin "https://app.valvx.se"
-		header Access-Control-Allow-Methods "GET, POST, OPTIONS"
-		header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
-		respond 204
-	}
-
-	reverse_proxy {
-		to 127.0.0.1:8080
-	}
-}
-
-storage.speckle.valvx.se {
-	reverse_proxy {
-		to 127.0.0.1:9200
 	}
 }
 
