@@ -3,10 +3,8 @@
 // Uses tusd v2 with S3 store backend for streaming directly to MinIO.
 // No temp files on disk — chunks go straight to S3 multipart upload.
 //
-// Features:
-// - 5 MB chunk size for fast parallel transfer
-// - Automatic resume on network failure
-// - Post-upload hooks: create arca_file + arca_file_version, trigger Speckle IFC import
+// IFC files are stored as-is — client-side web-ifc WASM handles parsing.
+// No server-side conversion pipeline needed.
 package upload
 
 import (
@@ -42,16 +40,14 @@ type Config struct {
 type Handler struct {
 	DB         *sql.DB
 	Config     Config
-	Bridge     *SpeckleBridge
 	tusHandler *handler.Handler
 }
 
 // NewHandler creates a new upload handler with a real TUS server backed by S3/MinIO.
-func NewHandler(db *sql.DB, cfg Config, bridge *SpeckleBridge) *Handler {
+func NewHandler(db *sql.DB, cfg Config) *Handler {
 	h := &Handler{
 		DB:     db,
 		Config: cfg,
-		Bridge: bridge,
 	}
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
@@ -192,19 +188,6 @@ func (h *Handler) onUploadComplete(event handler.HookEvent) {
 	}
 
 	log.Printf("Created file record: %s (version %s)", fileID, fileVersionID)
-
-	if isIFCFile(ext) && h.Bridge != nil {
-		go func() {
-			if err := h.Bridge.TriggerImport(context.Background(), fileVersionID, info.ID); err != nil {
-				log.Printf("Speckle import trigger failed for %s: %v", fileVersionID, err)
-			}
-		}()
-	}
-}
-
-func isIFCFile(ext string) bool {
-	ext = strings.ToLower(ext)
-	return ext == "ifc" || ext == "ifczip"
 }
 
 func parseTUSMetadata(header string) map[string]string {

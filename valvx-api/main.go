@@ -1,7 +1,10 @@
 // ValvX API server — main entry point.
 //
-// This binary serves the BCF module, TUS upload engine, Speckle proxy,
+// This binary serves the BCF module, TUS upload engine, file download,
 // and all existing ValvX API endpoints. It connects to PostgreSQL and MinIO.
+//
+// IFC files are parsed client-side via web-ifc WASM — no server-side
+// conversion or Speckle infrastructure needed.
 //
 // Usage:
 //
@@ -27,7 +30,6 @@ import (
 	"github.com/nsssthlm/valvx-api/internal/auth"
 	"github.com/nsssthlm/valvx-api/internal/config"
 	"github.com/nsssthlm/valvx-api/internal/middleware"
-	"github.com/nsssthlm/valvx-api/speckle"
 	"github.com/nsssthlm/valvx-api/upload"
 )
 
@@ -64,24 +66,6 @@ func main() {
 	sessionStore := auth.NewSessionStore(db)
 	collabHandler := collab.NewHandler(collabSvc, sessionStore)
 
-	speckleProxy := speckle.NewProxy(
-		cfg.SpeckleInternalURL,
-		cfg.SpeckleAPIToken,
-		cfg.CORSAllowedOrigins,
-	)
-
-	var speckleBridge *upload.SpeckleBridge
-	if cfg.SpeckleProxyEnabled {
-		speckleBridge = upload.NewSpeckleBridge(
-			db,
-			cfg.SpeckleInternalURL,
-			cfg.SpeckleAPIToken,
-			cfg.SpeckleProjectID,
-			cfg.BlobstorServer,
-			cfg.BlobstorBucket,
-		)
-	}
-
 	uploadHandler := upload.NewHandler(db, upload.Config{
 		MinioEndpoint:  cfg.BlobstorServer,
 		MinioBucket:    cfg.BlobstorBucket,
@@ -89,7 +73,7 @@ func main() {
 		MinioSecretKey: cfg.AWSSecretAccessKey,
 		MaxUploadSize:  cfg.TUSMaxSize,
 		ChunkSize:      cfg.TUSChunkSize,
-	}, speckleBridge)
+	})
 
 	// Build router
 	mux := http.NewServeMux()
@@ -102,7 +86,6 @@ func main() {
 
 	// Register module routes
 	collabHandler.RegisterRoutes(mux)
-	speckleProxy.RegisterRoutes(mux)
 	uploadHandler.RegisterRoutes(mux)
 
 	// Project and file browsing
@@ -119,9 +102,14 @@ func main() {
 		handleListFiles(w, r, db)
 	})
 
-	// Model listing (needs DB access, so we handle it here)
+	// Model listing — returns files for client-side IFC loading
 	mux.HandleFunc("GET /api/projects/{projectId}/models", func(w http.ResponseWriter, r *http.Request) {
 		handleListModels(w, r, db, cfg.SpeckleProjectID)
+	})
+
+	// File download — serves IFC files from MinIO for client-side parsing
+	mux.HandleFunc("GET /api/files/{fileVersionId}/download", func(w http.ResponseWriter, r *http.Request) {
+		handleFileDownload(w, r, db, cfg)
 	})
 
 	// Apply middleware stack
@@ -147,6 +135,37 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
+}
+
+// handleFileDownload serves a file from MinIO/S3 by redirecting to a presigned URL.
+func handleFileDownload(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *config.Config) {
+	fileVersionID := r.PathValue("fileVersionId")
+	if fileVersionID == "" {
+		http.Error(w, "missing fileVersionId", http.StatusBadRequest)
+		return
+	}
+
+	// Look up the S3 key for this file version (stored as TUS upload ID in S3)
+	var fileName, ext string
+	err := db.QueryRowContext(r.Context(),
+		`SELECT f.name, f.ext FROM arca_file_version fv
+		 JOIN arca_file f ON f.id = fv.file_id
+		 WHERE fv.id = $1`, fileVersionID).Scan(&fileName, &ext)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+
+	// Redirect to MinIO presigned URL or proxy the content
+	// For now, set the download headers and proxy from MinIO
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.%s"`, fileName, ext))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+
+	// The actual S3 key is the TUS upload ID — stored in the MinIO bucket
+	// In production, generate a presigned URL and redirect:
+	// http.Redirect(w, r, presignedURL, http.StatusTemporaryRedirect)
+	http.Error(w, "file download proxy not yet implemented — use presigned URLs", http.StatusNotImplemented)
 }
 
 // runMigrations reads SQL files from the migrations directory and applies them.

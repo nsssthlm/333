@@ -1,29 +1,28 @@
 <script setup lang="ts">
 /**
- * SpeckleModelViewer — Main 3D viewer component.
- * Replaces the old Speckle iframe with an embedded @speckle/viewer.
+ * IfcModelViewer — Main 3D viewer component.
+ * Uses That Open Engine (@thatopen/components) with client-side
+ * IFC parsing via web-ifc WASM. No server-side conversion needed.
  *
  * Features:
- * - Direct Three.js rendering (no iframe overhead)
- * - Multi-model loading with layer toggling
- * - Full security headers (no more CORS/X-Frame hacks)
- * - Integrated BCF viewpoint capture
- * - Section planes, measurements, object selection
+ * - Direct IFC file loading from MinIO/S3
+ * - Three.js rendering with smooth orbit controls
+ * - Object selection with IFC property display
+ * - Section planes (double-click to create, right-click to delete)
+ * - BCF viewpoint capture for issue creation
  */
 import { ref, watch, onMounted } from 'vue'
-import { useSpeckleViewer } from '~/composables/useSpeckleViewer'
-import type { LoadedModel } from '~/types/speckle'
+import { useIfcViewer, type IfcModel } from '~/composables/useIfcViewer'
 
 const props = defineProps<{
   projectId: string
-  models?: LoadedModel[]
-  speckleToken?: string
+  models?: IfcModel[]
 }>()
 
 const emit = defineEmits<{
   objectSelected: [objectId: string, properties: Record<string, unknown> | null]
   viewpointCaptured: [viewpoint: any]
-  modelLoaded: [model: LoadedModel]
+  modelLoaded: [model: IfcModel]
 }>()
 
 const viewerContainer = ref<HTMLElement | null>(null)
@@ -36,6 +35,7 @@ const {
   selectedObjectIds,
   selectedObjectProperties,
   error,
+  init,
   loadModel,
   unloadModel,
   toggleModelVisibility,
@@ -48,7 +48,12 @@ const {
   captureViewpoint,
   restoreViewpoint,
   resetFilters,
-} = useSpeckleViewer(viewerContainer)
+} = useIfcViewer(viewerContainer)
+
+// Initialize viewer when container is ready
+onMounted(() => {
+  init()
+})
 
 // Watch for model list changes
 watch(
@@ -56,7 +61,7 @@ watch(
   async (newModels) => {
     if (!newModels || !isInitialized.value) return
     for (const model of newModels) {
-      await loadModel(model, props.speckleToken)
+      await loadModel(model)
       emit('modelLoaded', model)
     }
   },
@@ -112,7 +117,7 @@ defineExpose({
     <div v-if="isLoading" class="viewer-loading">
       <div class="viewer-loading-content">
         <div class="spinner" />
-        <span>Loading model...</span>
+        <span>Loading IFC model...</span>
         <div class="progress-bar" style="width: 200px">
           <div
             class="progress-bar-fill"
@@ -152,7 +157,7 @@ defineExpose({
         <button
           class="btn btn-icon btn-sm"
           :class="{ active: sectionActive }"
-          title="Section plane"
+          title="Section plane (double-click to place)"
           @click="handleToggleSection"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -172,7 +177,7 @@ defineExpose({
             <circle cx="13" cy="3" r="1.5" fill="currentColor"/>
           </svg>
         </button>
-        <button class="btn btn-icon btn-sm" title="Reset filters" @click="resetFilters">
+        <button class="btn btn-icon btn-sm" title="Reset selection" @click="resetFilters">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M2 4h12M4 8h8M6 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
