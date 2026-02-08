@@ -35,7 +35,6 @@ func NewProxy(internalURL, token, allowedOrigin string) *Proxy {
 func (p *Proxy) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/speckle/graphql", p.ProxyGraphQL)
 	mux.HandleFunc("/api/speckle/objects/", p.ProxyObjects)
-	mux.HandleFunc("/api/projects/{projectId}/models", p.ListModels)
 }
 
 // ProxyGraphQL forwards GraphQL requests to Speckle.
@@ -122,23 +121,6 @@ func (p *Proxy) ProxyObjects(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// ListModels returns the available Speckle models for a ValvX project,
-// by querying the arca_speckle_mapping table.
-func (p *Proxy) ListModels(w http.ResponseWriter, r *http.Request) {
-	// This endpoint is handled by the main API which has DB access.
-	// The proxy just provides the route registration.
-	// In production, this would query:
-	//   SELECT fv.id, f.name, f.ext, sm.speckle_model_id, sm.speckle_object_id, sm.status
-	//   FROM arca_file_version fv
-	//   JOIN arca_file f ON f.id = fv.file_id
-	//   JOIN arca_speckle_mapping sm ON sm.file_version_id = fv.id
-	//   JOIN arca_folder_file ff ON ff.file_id = f.id
-	//   JOIN arca_folder fo ON fo.id = ff.folder_id
-	//   WHERE fo.project_id = $1 AND sm.status = 'ready'
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte("[]"))
-}
 
 func (p *Proxy) writeCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", p.AllowedOrigin)

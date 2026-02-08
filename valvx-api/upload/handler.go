@@ -1,10 +1,12 @@
 // Package upload implements the TUS-based chunked upload engine.
 //
-// Uses the TUS protocol for resumable uploads with S3/MinIO backend.
+// Uses tusd v2 with S3 store backend for streaming directly to MinIO.
+// No temp files on disk — chunks go straight to S3 multipart upload.
+//
 // Features:
 // - 5 MB chunk size for fast parallel transfer
-// - Automatic resume on failure
-// - Post-upload hooks for file registration and Speckle IFC import
+// - Automatic resume on network failure
+// - Post-upload hooks: create arca_file + arca_file_version, trigger Speckle IFC import
 package upload
 
 import (
@@ -18,7 +20,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	awssession "github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/google/uuid"
+	"github.com/tus/tusd/v2/pkg/handler"
+	"github.com/tus/tusd/v2/pkg/s3store"
 )
 
 // Config holds upload engine configuration.
@@ -27,200 +35,173 @@ type Config struct {
 	MinioBucket    string
 	MinioAccessKey string
 	MinioSecretKey string
-	MaxUploadSize  int64 // bytes, default 5GB
-	ChunkSize      int64 // bytes, default 5MB
+	MaxUploadSize  int64
+	ChunkSize      int64
 }
 
 // Handler manages TUS uploads and post-upload processing.
 type Handler struct {
-	DB     *sql.DB
-	Config Config
-	Bridge *SpeckleBridge
+	DB         *sql.DB
+	Config     Config
+	Bridge     *SpeckleBridge
+	tusHandler *handler.Handler
 }
 
-// NewHandler creates a new upload handler.
+// NewHandler creates a new upload handler with a real TUS server backed by S3/MinIO.
 func NewHandler(db *sql.DB, cfg Config, bridge *SpeckleBridge) *Handler {
-	return &Handler{
+	h := &Handler{
 		DB:     db,
 		Config: cfg,
 		Bridge: bridge,
 	}
+
+	awsConfig := &aws.Config{
+		Region:           aws.String("us-east-1"),
+		Endpoint:         aws.String(cfg.MinioEndpoint),
+		S3ForcePathStyle: aws.Bool(true),
+		Credentials:      credentials.NewStaticCredentials(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
+	}
+
+	sess, err := awssession.NewSession(awsConfig)
+	if err != nil {
+		log.Printf("Warning: could not create S3 session for TUS: %v", err)
+		return h
+	}
+
+	s3Client := s3.New(sess)
+	store := s3store.New(cfg.MinioBucket, s3Client)
+
+	composer := handler.NewStoreComposer()
+	store.UseIn(composer)
+
+	tusHandler, err := handler.NewHandler(handler.Config{
+		BasePath:                "/api/uploads/",
+		StoreComposer:           composer,
+		MaxSize:                 cfg.MaxUploadSize,
+		NotifyCompleteUploads:   true,
+		NotifyCreatedUploads:    true,
+		RespectForwardedHeaders: true,
+	})
+	if err != nil {
+		log.Printf("Warning: could not create TUS handler: %v", err)
+		return h
+	}
+
+	h.tusHandler = tusHandler
+	go h.processCompletedUploads()
+
+	return h
 }
 
 // RegisterRoutes sets up the TUS upload endpoint.
-//
-// The TUS protocol uses:
-//   POST   /api/uploads     — Create new upload
-//   PATCH  /api/uploads/{id} — Upload chunks
-//   HEAD   /api/uploads/{id} — Check upload status (for resume)
-//   DELETE /api/uploads/{id} — Cancel upload
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/uploads", h.HandleTUS)
-	mux.HandleFunc("/api/uploads/", h.HandleTUS)
-}
+	if h.tusHandler != nil {
+		mux.Handle("POST /api/uploads/", http.StripPrefix("/api/uploads/", h.tusHandler))
+		mux.Handle("HEAD /api/uploads/", http.StripPrefix("/api/uploads/", h.tusHandler))
+		mux.Handle("PATCH /api/uploads/", http.StripPrefix("/api/uploads/", h.tusHandler))
+		mux.Handle("DELETE /api/uploads/", http.StripPrefix("/api/uploads/", h.tusHandler))
+		mux.Handle("POST /api/uploads", http.StripPrefix("/api/uploads", h.tusHandler))
 
-// HandleTUS is a simplified TUS protocol handler.
-// In production, this should use github.com/tus/tusd/v2 with S3 store.
-func (h *Handler) HandleTUS(w http.ResponseWriter, r *http.Request) {
-	// Set TUS headers
-	w.Header().Set("Tus-Resumable", "1.0.0")
-	w.Header().Set("Tus-Version", "1.0.0")
-	w.Header().Set("Tus-Extension", "creation,creation-with-upload,termination")
-	w.Header().Set("Tus-Max-Size", fmt.Sprintf("%d", h.Config.MaxUploadSize))
-
-	switch r.Method {
-	case http.MethodOptions:
-		w.WriteHeader(http.StatusNoContent)
-		return
-
-	case http.MethodPost:
-		h.handleCreate(w, r)
-
-	case http.MethodPatch:
-		h.handlePatch(w, r)
-
-	case http.MethodHead:
-		h.handleHead(w, r)
-
-	case http.MethodDelete:
-		h.handleDelete(w, r)
-
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		optionsHandler := func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Tus-Resumable", "1.0.0")
+			w.Header().Set("Tus-Version", "1.0.0")
+			w.Header().Set("Tus-Extension", "creation,creation-with-upload,termination")
+			w.Header().Set("Tus-Max-Size", fmt.Sprintf("%d", h.Config.MaxUploadSize))
+			w.WriteHeader(http.StatusNoContent)
+		}
+		mux.HandleFunc("OPTIONS /api/uploads", optionsHandler)
+		mux.HandleFunc("OPTIONS /api/uploads/", optionsHandler)
+	} else {
+		unavailable := func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "upload service unavailable", http.StatusServiceUnavailable)
+		}
+		mux.HandleFunc("/api/uploads", unavailable)
+		mux.HandleFunc("/api/uploads/", unavailable)
 	}
 }
 
-func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
-	uploadLength := r.Header.Get("Upload-Length")
-	metadata := parseTUSMetadata(r.Header.Get("Upload-Metadata"))
+func (h *Handler) processCompletedUploads() {
+	if h.tusHandler == nil {
+		return
+	}
+	for {
+		select {
+		case event := <-h.tusHandler.CompleteUploads:
+			go h.onUploadComplete(event)
+		case event := <-h.tusHandler.CreatedUploads:
+			log.Printf("Upload created: %s (%d bytes)", event.Upload.ID, event.Upload.Size)
+		}
+	}
+}
+
+func (h *Handler) onUploadComplete(event handler.HookEvent) {
+	info := event.Upload
+	metadata := info.MetaData
 
 	filename := metadata["filename"]
 	folderId := metadata["folderId"]
 	ext := strings.TrimPrefix(filepath.Ext(filename), ".")
-
-	uploadID := uuid.New().String()
-
-	// Store upload state in DB
-	_, err := h.DB.ExecContext(r.Context(), `
-		INSERT INTO upload_state (id, filename, ext, folder_id, total_size, uploaded_size, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, 0, 'uploading', $6)`,
-		uploadID, filename, ext, folderId, uploadLength, time.Now().UTC(),
-	)
-	if err != nil {
-		// If upload_state table doesn't exist yet, continue anyway
-		log.Printf("Warning: could not persist upload state: %v", err)
+	if ext == "" {
+		ext = metadata["ext"]
 	}
 
-	location := fmt.Sprintf("/api/uploads/%s", uploadID)
-	w.Header().Set("Location", location)
-	w.Header().Set("Upload-Offset", "0")
-	w.WriteHeader(http.StatusCreated)
-}
-
-func (h *Handler) handlePatch(w http.ResponseWriter, r *http.Request) {
-	// Extract upload ID from path
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 {
-		http.Error(w, "invalid upload path", http.StatusBadRequest)
-		return
-	}
-	uploadID := parts[len(parts)-1]
-
-	// In production: stream chunk to MinIO via S3 multipart upload
-	// For now, we read the chunk and track the offset
-
-	offset := r.Header.Get("Upload-Offset")
-
-	// Read the chunk data
-	// In production, this would be piped directly to S3
-	chunkSize := r.ContentLength
-	if chunkSize <= 0 {
-		chunkSize = h.Config.ChunkSize
+	creatorID := metadata["creatorId"]
+	if creatorID == "" {
+		creatorID = metadata["creator_id"]
 	}
 
-	// Simulate processing - in production this is the S3 multipart upload
-	// The actual implementation uses tusd's S3 store which handles all of this
-	newOffset := fmt.Sprintf("%d", chunkSize) // Simplified
+	log.Printf("Upload complete: %s (%s, %d bytes, folder=%s)", filename, ext, info.Size, folderId)
 
-	w.Header().Set("Upload-Offset", newOffset)
-	w.WriteHeader(http.StatusNoContent)
-
-	// Check if upload is complete (simplified)
-	// In production, tusd fires CompleteUploads events
-	_ = uploadID
-	_ = offset
-}
-
-func (h *Handler) handleHead(w http.ResponseWriter, r *http.Request) {
-	// Return current offset for resume
-	w.Header().Set("Upload-Offset", "0")
-	w.Header().Set("Upload-Length", "0")
-	w.WriteHeader(http.StatusOK)
-}
-
-func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// OnUploadComplete is called when a file upload finishes.
-// It creates the arca_file and arca_file_version records and
-// triggers Speckle import for IFC files.
-func (h *Handler) OnUploadComplete(ctx context.Context, uploadID, filename, ext, folderId string, size int64, creatorID string) error {
+	ctx := context.Background()
 	fileID := uuid.New().String()
 	fileVersionID := uuid.New().String()
 	now := time.Now().UTC()
 
 	tx, err := h.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		log.Printf("Upload post-processing error (begin tx): %v", err)
+		return
 	}
 	defer tx.Rollback()
 
-	// Create arca_file
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO arca_file (id, created_at, updated_at, name, ext)
-		VALUES ($1, $2, $3, $4, $5)`,
-		fileID, now, now, strings.TrimSuffix(filename, "."+ext), ext,
-	)
+	cleanName := strings.TrimSuffix(filename, "."+ext)
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO arca_file (id, created_at, updated_at, name, ext) VALUES ($1, $2, $3, $4, $5)`,
+		fileID, now, now, cleanName, ext)
 	if err != nil {
-		return fmt.Errorf("insert file: %w", err)
+		log.Printf("Upload post-processing error (insert file): %v", err)
+		return
 	}
 
-	// Create arca_file_version
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO arca_file_version (id, created_at, updated_at, number, size, file_id, creator_id)
-		VALUES ($1, $2, $3, 1, $4, $5, $6)`,
-		fileVersionID, now, now, size, fileID, creatorID,
-	)
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO arca_file_version (id, created_at, updated_at, number, size, file_id, creator_id)
+		 VALUES ($1, $2, $3, 1, $4, $5, $6)`,
+		fileVersionID, now, now, info.Size, fileID, creatorID)
 	if err != nil {
-		return fmt.Errorf("insert file version: %w", err)
+		log.Printf("Upload post-processing error (insert file_version): %v", err)
+		return
 	}
 
-	// Link to folder
 	if folderId != "" && folderId != "root" {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO arca_folder_file (folder_id, file_id) VALUES ($1, $2)`,
-			folderId, fileID,
-		)
-		if err != nil {
-			return fmt.Errorf("link folder: %w", err)
-		}
+		tx.ExecContext(ctx,
+			`INSERT INTO arca_folder_file (folder_id, file_id) VALUES ($1, $2)`,
+			folderId, fileID)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		log.Printf("Upload post-processing error (commit): %v", err)
+		return
 	}
 
-	// Trigger Speckle import for IFC files
+	log.Printf("Created file record: %s (version %s)", fileID, fileVersionID)
+
 	if isIFCFile(ext) && h.Bridge != nil {
 		go func() {
-			if err := h.Bridge.TriggerImport(context.Background(), fileVersionID, uploadID); err != nil {
+			if err := h.Bridge.TriggerImport(context.Background(), fileVersionID, info.ID); err != nil {
 				log.Printf("Speckle import trigger failed for %s: %v", fileVersionID, err)
 			}
 		}()
 	}
-
-	return nil
 }
 
 func isIFCFile(ext string) bool {
@@ -228,23 +209,19 @@ func isIFCFile(ext string) bool {
 	return ext == "ifc" || ext == "ifczip"
 }
 
-// parseTUSMetadata parses the Upload-Metadata header.
-// Format: "key base64val, key2 base64val2"
 func parseTUSMetadata(header string) map[string]string {
 	result := make(map[string]string)
 	if header == "" {
 		return result
 	}
-
 	pairs := strings.Split(header, ",")
 	for _, pair := range pairs {
 		pair = strings.TrimSpace(pair)
 		parts := strings.SplitN(pair, " ", 2)
 		if len(parts) == 2 {
-			// Value is base64 encoded
-			decoded, err := decodeBase64(parts[1])
+			decoded, err := base64.StdEncoding.DecodeString(parts[1])
 			if err == nil {
-				result[parts[0]] = decoded
+				result[parts[0]] = string(decoded)
 			} else {
 				result[parts[0]] = parts[1]
 			}
@@ -252,18 +229,5 @@ func parseTUSMetadata(header string) map[string]string {
 			result[parts[0]] = ""
 		}
 	}
-
 	return result
-}
-
-func decodeBase64(s string) (string, error) {
-	data, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		// Try URL-safe encoding
-		data, err = base64.URLEncoding.DecodeString(s)
-		if err != nil {
-			return s, err
-		}
-	}
-	return string(data), nil
 }

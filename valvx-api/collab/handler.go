@@ -8,17 +8,36 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/google/uuid"
+	"github.com/nsssthlm/valvx-api/internal/auth"
 )
 
 // Handler holds the BCF HTTP handler dependencies.
 type Handler struct {
-	Service *Service
+	Service      *Service
+	SessionStore *auth.SessionStore
 }
 
 // NewHandler creates a new BCF handler.
-func NewHandler(svc *Service) *Handler {
-	return &Handler{Service: svc}
+func NewHandler(svc *Service, sessionStore *auth.SessionStore) *Handler {
+	return &Handler{Service: svc, SessionStore: sessionStore}
+}
+
+// getProfileID extracts the account from context and resolves the iam_profile
+// for the given project. Returns empty string if unauthenticated.
+func (h *Handler) getProfileID(r *http.Request) string {
+	accountID := auth.AccountIDFromContext(r.Context())
+	if accountID == "" {
+		return ""
+	}
+	projectID := r.PathValue("projectId")
+	if projectID == "" || h.SessionStore == nil {
+		return accountID
+	}
+	profileID, err := h.SessionStore.GetProfileForProject(r.Context(), accountID, projectID)
+	if err != nil {
+		return accountID
+	}
+	return profileID
 }
 
 // RegisterRoutes registers BCF API routes on the given mux.
@@ -74,8 +93,11 @@ func (h *Handler) CreateTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: get creator profile ID from session
-	creatorID := "00000000-0000-0000-0000-000000000000"
+	creatorID := h.getProfileID(r)
+	if creatorID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	topic, err := h.Service.CreateTopic(r.Context(), projectID, creatorID, req)
 	if err != nil {
@@ -153,8 +175,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: get author profile ID from session
-	authorID := "00000000-0000-0000-0000-000000000000"
+	authorID := h.getProfileID(r)
+	if authorID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	comment, err := h.Service.CreateComment(r.Context(), topicID, authorID, req)
 	if err != nil {
@@ -242,8 +267,11 @@ func (h *Handler) ImportBCF(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// TODO: get importer profile ID from session
-	importerID := "00000000-0000-0000-0000-000000000000"
+	importerID := h.getProfileID(r)
+	if importerID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	count, err := h.Service.ImportBCF(r.Context(), projectID, importerID, file)
 	if err != nil {
@@ -264,7 +292,3 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-// newUUID generates a new UUID v4.
-func newUUID() string {
-	return uuid.New().String()
-}
