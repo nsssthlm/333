@@ -1,0 +1,12 @@
+# Node.js
+node_modules/
+.nuxt/
+.output/
+
+# Go
+*.exe
+
+# Large data files (restored to running services, too large for GitHub)
+speckle/db-dump/speckle_db.dump
+speckle/db-dump/speckle_db.sql
+valvx/minio-data/valvx/019a5da3-39b3-7559-802c-0b816a8f7321/b922014e-4de8-4497-a9d5-f369145b8bb1/part.1

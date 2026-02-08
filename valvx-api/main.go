@@ -105,6 +105,20 @@ func main() {
 	speckleProxy.RegisterRoutes(mux)
 	uploadHandler.RegisterRoutes(mux)
 
+	// Project and file browsing
+	mux.HandleFunc("GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
+		handleListProjects(w, r, db)
+	})
+	mux.HandleFunc("GET /api/projects/{projectId}", func(w http.ResponseWriter, r *http.Request) {
+		handleGetProject(w, r, db)
+	})
+	mux.HandleFunc("GET /api/projects/{projectId}/folders", func(w http.ResponseWriter, r *http.Request) {
+		handleListFolders(w, r, db)
+	})
+	mux.HandleFunc("GET /api/projects/{projectId}/folders/{folderId}/files", func(w http.ResponseWriter, r *http.Request) {
+		handleListFiles(w, r, db)
+	})
+
 	// Model listing (needs DB access, so we handle it here)
 	mux.HandleFunc("GET /api/projects/{projectId}/models", func(w http.ResponseWriter, r *http.Request) {
 		handleListModels(w, r, db, cfg.SpeckleProjectID)

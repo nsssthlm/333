@@ -20,10 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	awssession "github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
+	s3v2 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/tus/tusd/v2/pkg/handler"
 	"github.com/tus/tusd/v2/pkg/s3store"
@@ -55,20 +54,19 @@ func NewHandler(db *sql.DB, cfg Config, bridge *SpeckleBridge) *Handler {
 		Bridge: bridge,
 	}
 
-	awsConfig := &aws.Config{
-		Region:           aws.String("us-east-1"),
-		Endpoint:         aws.String(cfg.MinioEndpoint),
-		S3ForcePathStyle: aws.Bool(true),
-		Credentials:      credentials.NewStaticCredentials(cfg.MinioAccessKey, cfg.MinioSecretKey, ""),
-	}
-
-	sess, err := awssession.NewSession(awsConfig)
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(awscreds.NewStaticCredentialsProvider(cfg.MinioAccessKey, cfg.MinioSecretKey, "")),
+	)
 	if err != nil {
-		log.Printf("Warning: could not create S3 session for TUS: %v", err)
+		log.Printf("Warning: could not load AWS config for TUS: %v", err)
 		return h
 	}
 
-	s3Client := s3.New(sess)
+	s3Client := s3v2.NewFromConfig(awsCfg, func(o *s3v2.Options) {
+		o.BaseEndpoint = &cfg.MinioEndpoint
+		o.UsePathStyle = true
+	})
 	store := s3store.New(cfg.MinioBucket, s3Client)
 
 	composer := handler.NewStoreComposer()

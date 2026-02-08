@@ -1,22 +1,7 @@
 <script setup lang="ts">
-/**
- * Home page — project selection
- */
 const config = useRuntimeConfig()
 
-// In production, this would come from the API
-const projects = ref([
-  {
-    id: 'aa03cc85-fe34-4ffd-b25f-e2edbef08b59',
-    name: 'ValvX Demo Project',
-    code: 'valvx-demo-project',
-  },
-  {
-    id: 'af96c893-cbb8-4190-ab1b-8d394a3b6c7e',
-    name: 'Gökbo',
-    code: 'cavada-gokbo',
-  },
-])
+const { data: projects } = await useFetch<any[]>(`${config.public.apiBaseUrl}/projects`)
 </script>
 
 <template>
@@ -26,9 +11,9 @@ const projects = ref([
     </div>
     <div class="projects-grid">
       <NuxtLink
-        v-for="project in projects"
+        v-for="project in (projects || [])"
         :key="project.id"
-        :to="`/projects/${project.id}/viewer`"
+        :to="`/projects/${project.id}`"
         class="project-card"
       >
         <div class="project-icon">
@@ -36,7 +21,6 @@ const projects = ref([
         </div>
         <div class="project-info">
           <div class="project-name">{{ project.name }}</div>
-          <div class="project-code text-xs text-muted">{{ project.code }}</div>
         </div>
       </NuxtLink>
     </div>
@@ -49,7 +33,6 @@ const projects = ref([
   height: 100%;
   overflow-y: auto;
 }
-
 .home-header {
   margin-bottom: 24px;
 }
@@ -57,13 +40,11 @@ const projects = ref([
   font-size: 24px;
   font-weight: 700;
 }
-
 .projects-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
 }
-
 .project-card {
   display: flex;
   align-items: center;
@@ -81,7 +62,6 @@ const projects = ref([
   box-shadow: var(--shadow-md);
   transform: translateY(-1px);
 }
-
 .project-icon {
   width: 48px;
   height: 48px;
@@ -95,7 +75,6 @@ const projects = ref([
   border-radius: var(--radius-md);
   flex-shrink: 0;
 }
-
 .project-name {
   font-size: 15px;
   font-weight: 600;
